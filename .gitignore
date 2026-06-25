@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+# spreadsheet exports are maintained separately, not committed (see the skill)
+*.xlsx
+*.ods
+.venv/

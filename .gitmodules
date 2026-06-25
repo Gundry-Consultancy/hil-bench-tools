@@ -1,0 +1,4 @@
+[submodule "vendor/Wippersnapper_Components"]
+	path = vendor/Wippersnapper_Components
+	url = https://github.com/tyeth-ai-assisted/Wippersnapper_Components.git
+	branch = add/hil-i2c-generator
