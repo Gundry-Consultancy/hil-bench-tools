@@ -59,11 +59,65 @@ def mux_for_channel(g, ch):
     return (hexs(g.MUXES[1]["address"]), ch - 9)
 
 
+def _attached_set():
+    if not OVERLAY_PATH.exists():
+        return set()
+    ov = json.loads(OVERLAY_PATH.read_text(encoding="utf-8"))
+    return {k for k, v in ov.items()
+            if not k.startswith("_") and isinstance(v, dict) and v.get("attached")}
+
+
+def _prior_positions():
+    """Pins come from the committed hil_map.json — attached devices keep their
+    current channel + address ('the JSON import IS the pinning')."""
+    if not MAP_PATH.exists():
+        return {}
+    prior = json.loads(MAP_PATH.read_text(encoding="utf-8"))
+    out = {}
+    for r in prior:
+        if r.get("channel_index", -1) >= 0 and r.get("address"):
+            out[r["component"]] = (r["channel_index"], int(r["address"], 16))
+    return out
+
+
+def _detect_conflicts(comps, assignment, picked_addr):
+    """Same-channel+address collisions, or a mux device clashing with the
+    always-visible direct bus. These mean a proposed device landed on a pin —
+    resolve per the hil-sensor-map skill, don't silently reshuffle a pin."""
+    msgs = []
+    direct = {picked_addr[c["dir"]] for c in comps
+              if assignment.get(c["dir"]) == 0 and picked_addr.get(c["dir"]) is not None}
+    seen = {}
+    for c in comps:
+        ch = assignment.get(c["dir"], -1)
+        pa = picked_addr.get(c["dir"])
+        if ch < 0 or pa is None:
+            continue
+        if (ch, pa) in seen:
+            msgs.append(f"CONFLICT ch{ch} 0x{pa:02X}: {seen[(ch, pa)]} AND {c['dir']}")
+        else:
+            seen[(ch, pa)] = c["dir"]
+        if ch > 0 and pa in direct:
+            msgs.append(f"CONFLICT mux ch{ch} {c['dir']} 0x{pa:02X} clashes with direct bus")
+    return msgs
+
+
 def build_records(g):
-    """Reproduce the generator's placement and emit one record per component."""
+    """Generator placement for PROPOSALS, with attached devices PINNED to their
+    current position carried over from hil_map.json (frozen out of the matrix)."""
     g.configure_muxes(False)  # single TCA9548A @ 0x77, matching the bench
     comps = g.load_components(SUBMODULE)
     assignment, picked_addr, _channel_addrs = g.assign_channels(comps)
+
+    # ── Pinning: freeze attached devices at their committed position ──
+    attached = _attached_set()
+    pins = {d: pos for d, pos in _prior_positions().items() if d in attached}
+    for d, (ch, addr) in pins.items():
+        if d in assignment:
+            assignment[d] = ch
+            picked_addr[d] = addr
+    build_records.pins = sorted(pins)
+    build_records.conflicts = _detect_conflicts(comps, assignment, picked_addr)
 
     records = []
     for c in comps:
@@ -153,6 +207,13 @@ def main():
     pr = sum(1 for r in records if r["pr933"])
     print(f"WROTE {MAP_PATH.name}: {len(records)} components "
           f"({placed} placed, {solder} need soldering, {pr} PR#933 drivers)")
+    print(f"  pinned (attached, frozen out of the matrix): {len(build_records.pins)}"
+          + (f" -> {', '.join(build_records.pins)}" if build_records.pins else ""))
+    if build_records.conflicts:
+        print(f"  !! {len(build_records.conflicts)} CONFLICT(S) — a proposed device landed on a pin.")
+        print("     Resolve per .claude/skills/hil-sensor-map/SKILL.md (move the NEW one, not the pin):")
+        for m in build_records.conflicts:
+            print("       " + m)
     inject_html(records)
 
 

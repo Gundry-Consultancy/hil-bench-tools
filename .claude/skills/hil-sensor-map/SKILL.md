@@ -24,9 +24,12 @@ vendor/Wippersnapper_Components/   git submodule @ add/hil-i2c-generator
         └─► sensor-coach.html (HIL_MAP injected between markers)
 ```
 
-`hil_map.json` is a **one-time export** — it is committed and only changes when you re-run
-`build_map.py`. The generator and component data are pulled in as a submodule so the map can
-always be regenerated from the same source the spreadsheet uses.
+`hil_map.json` is a **committed export** that doubles as the **pin source**: on every run
+`build_map.py` reads the previous `hil_map.json` back in and freezes every **attached** device
+at its current channel + address, removing it from the generator's redistribution matrix. The
+generator only ever *proposes* positions for **not-yet-attached** parts, routing them around the
+pins. So already-wired devices never move; only free slots get (re)assigned. The generator +
+component data come in as a submodule so the same source feeds both the map and the spreadsheet.
 
 ## Regenerate the map (the "import" step)
 
@@ -39,20 +42,51 @@ python make_hil_pdf.py                        # -> hil_sensor_attachment_guide.p
 `build_map.py` requires `openpyxl` (imported transitively by the generator):
 `pip install openpyxl fpdf2`.
 
-## When to re-run
+## Pinning model — how attached devices stay put
 
-- **Sensor added/moved/removed on the bench** → edit `overlay.json` (`attached`, `note`) → `python build_map.py`.
-- **New sensor or address change upstream** → update the submodule, then rebuild:
+- A device with `"attached": true` in `overlay.json` is **pinned** to whatever channel + address
+  it currently holds in `hil_map.json`. `build_map.py` carries that position forward verbatim and
+  excludes the device from the solve.
+- Everything else (`attached: false`) is a **proposal** — the generator places it into the free
+  space around the pins. Proposals can move freely between runs; pins never do.
+- **Lifecycle of a new sensor:** it starts `attached: false` → the generator proposes a slot →
+  you physically wire it there → flip `attached: true` → next `build_map.py` pins it at that slot.
+  (To wire it somewhere *other* than the proposal, see "moving a pin" below.)
+- Channel/address/jumper are **always** the generator's (for proposals) or the carried-over JSON's
+  (for pins) — never hand-typed into `overlay.json` or `hil_map.json`.
+
+## When to re-run (LLM reconciliation loop)
+
+This is the workflow an LLM (or a person) follows when the bench changes — read the situation,
+make the minimal `overlay.json`/submodule edit, rerun, resolve any conflict, then commit:
+
+- **New sensor attached** → set its component key `"attached": true` in `overlay.json` → `python build_map.py`.
+  It pins at its current proposed slot.
+- **Sensor removed** → set `"attached": false` (or drop the key) → rerun. Its slot returns to the free pool.
+- **New driver / PR membership / note** → add or edit the `overlay.json` key → rerun.
+- **Upstream component or address change** → bump the submodule, then rerun:
   ```sh
   cd vendor/Wippersnapper_Components && git pull origin add/hil-i2c-generator && cd ../..
   git add vendor/Wippersnapper_Components && python build_map.py
   ```
-- **New WS driver / PR membership** → add the component key to `overlay.json` and rebuild.
+- **Moving a pin on purpose** (rewire an attached device): temporarily set it `attached: false`,
+  rerun (so the JSON no longer pins the old slot), let the generator re-propose OR hand-place by
+  rewiring, then set `attached: true` and rerun to lock the new position.
 
 `overlay.json` keys are component directory names under
-`vendor/Wippersnapper_Components/components/i2c/`. `build_map.py` warns if a key has no match.
-Channel/address/jumper are **always** taken from the generator — never hand-edit them in the
-overlay or in `hil_map.json`.
+`vendor/Wippersnapper_Components/components/i2c/`; `build_map.py` warns on a key with no match.
+
+### Resolving a CONFLICT
+
+If `build_map.py` prints `!! N CONFLICT(S)`, a **proposed** device landed on a **pinned**
+channel+address (e.g. a submodule bump changed the free space). The pin is authoritative — do
+**not** move the pin. Resolve the *proposed* device instead:
+
+1. If it has another usable address (jumper) or another free channel, the generator will pick it
+   automatically once the colliding slot is genuinely occupied — re-run and confirm.
+2. If it's genuinely stuck, give it a different jumper address in the upstream component/jumper
+   data, or accept it on a different channel, then rerun until conflicts are zero.
+3. Never silently swap two devices — keep every `attached: true` device exactly where it is.
 
 ## Maintaining the human spreadsheet copy (separate from the JSON)
 
