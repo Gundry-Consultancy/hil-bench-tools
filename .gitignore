@@ -4,3 +4,6 @@ __pycache__/
 *.xlsx
 *.ods
 .venv/
+# scratch fetches used to verify the deployed page
+live_check.html
+_site/
