@@ -13,16 +13,14 @@
     - Model selector: Sonnet 4.6 (default), Opus 4.8, Haiku 4.5 (fastest).
     - Effort (low/med/high): the real speed<->quality dial. Opus/Sonnet only;
       Haiku 4.5 rejects `effort` so it's omitted for Haiku.
-    - Think: adaptive thinking (Opus/Sonnet only) — off by default; slower and
-      rarely needed for a one-shot lookup.
-    - There is no API "fast mode" for these models — Haiku + Low + Think off is
-      the fast path; that's the default when Haiku is selected.
+    - Think: adaptive thinking (Opus/Sonnet only) — off by default.
+    - No API "fast mode" for these models — Haiku + Low + Think off is the fast path.
 
-  USAGE:
-    1. Open in Chrome or Edge (mic + speech need a secure context — https or localhost).
-    2. Paste your Anthropic API key (stored only in this browser's localStorage).
-    3. Pick a model + effort, hold the mic (or press Space) and say
-       e.g. "I've got the SGP41" or "the three INAs and a BMP585".
+  VOICE: pick any installed system voice + playback speed (persisted). The 🔊
+  button previews. The model is prompted to answer TERSELY (facts only) — full
+  detail is shown on the cards.
+
+  See NOTES.md for the on-device (Gemma on the Android phone) future idea.
 -->
 <!DOCTYPE html>
 <html lang="en">
@@ -97,7 +95,20 @@
       <option value="medium">Effort: Med</option>
       <option value="high">Effort: High</option>
     </select>
-    <label class="modlbl" title="Adaptive thinking — Opus/Sonnet only; slower, rarely needed for a lookup"><input type="checkbox" id="think" style="accent-color:var(--accent)"> Think</label>
+    <label class="modlbl" title="Adaptive thinking — Opus/Sonnet only; slower"><input type="checkbox" id="think" style="accent-color:var(--accent)"> Think</label>
+  </div>
+  <div class="row">
+    <label class="modlbl" for="voice">Voice</label>
+    <select id="voice" style="flex:1;min-width:150px"></select>
+    <select id="rate" title="Playback speed">
+      <option value="0.8">0.8&times;</option>
+      <option value="1">1.0&times;</option>
+      <option value="1.1">1.1&times;</option>
+      <option value="1.3">1.3&times;</option>
+      <option value="1.5">1.5&times;</option>
+      <option value="1.8">1.8&times;</option>
+    </select>
+    <button class="save" id="testVoice" title="Preview voice + speed">🔊</button>
   </div>
   <div class="status" id="maptag" style="margin:-8px 0 12px;text-align:right"></div>
   <button class="mic" id="mic">🎤 Hold to talk (or press Space)</button>
@@ -134,7 +145,7 @@ function buildPrompt(){
   ).join("\n");
   SYSTEM = `You are "Sensor Coach", a hands-free helper for someone wiring an I2C sensor string for hardware-in-the-loop testing on a QT Py ESP32-S3, which has a single TCA9548A mux at address 0x77 plus a direct (no-mux) bus.
 
-The person picks up one sensor or a strand of sensors and tells you (often via imperfect speech-to-text) which one(s) they have. Identify each from the PLACEMENT MAP below and tell them which bus/mux channel it goes on, its I2C address, and whether it needs soldering.
+The person picks up one sensor or a strand of sensors and tells you (often via imperfect speech-to-text) which one(s) they have. Identify each from the PLACEMENT MAP below.
 
 PLACEMENT MAP (the ONLY source of truth — never invent a channel, address, or solder action; only use entries below):
 ${kbText}
@@ -146,8 +157,8 @@ Matching rules:
 - Prefer PR#933 drivers and currently-attached parts when a query is ambiguous, but you may answer for any sensor in the map.
 
 Call the structured output with:
-- matches: one object per identified sensor.
-- spoken: a SHORT natural reply read aloud by text-to-speech. Lead with channel + soldering. Terse, like a colleague across the bench. No markdown. e.g. "SGP41 goes on mux channel one, no soldering. Heads up - your attached SGP40 won't cover that driver."
+- matches: one object per identified sensor (full detail; the UI renders cards).
+- spoken: read aloud by TTS. Be TERSE — facts only. NO explanations, NO rationale, NO warnings, NO pleasantries, NO "heads up". Per sensor state ONLY: name, channel, address, and soldering (the jumper if needed). One short comma-separated clause each. Examples: "SGP41, channel 1, 0x59, no solder." / "HTU31D, channel 0, 0x41, solder ADDR to VDD." / "Direct bus" for non-mux parts.
 - unmatched: array of unidentified items ([] if none).`;
   ready = PLACED.length > 0;
 }
@@ -167,6 +178,7 @@ const SCHEMA = {
 
 const $ = id => document.getElementById(id);
 const keyInput=$("key"), modelSel=$("model"), effortSel=$("effort"), thinkBox=$("think"),
+      voiceSel=$("voice"), rateSel=$("rate"), testBtn=$("testVoice"),
       micBtn=$("mic"), transcriptEl=$("transcript"), spokenEl=$("spoken"), cardsEl=$("cards"),
       errEl=$("err"), statusEl=$("status"), typedEl=$("typed"), mapTag=$("maptag");
 
@@ -174,11 +186,49 @@ keyInput.value = localStorage.getItem("anthropic_key") || "";
 modelSel.value = localStorage.getItem("coach_model") || "claude-sonnet-4-6";
 effortSel.value = localStorage.getItem("coach_effort") || "low";
 thinkBox.checked = localStorage.getItem("coach_think") === "1";
+rateSel.value = localStorage.getItem("coach_rate") || "1.1";
 modelSel.onchange = () => localStorage.setItem("coach_model", modelSel.value);
 effortSel.onchange = () => localStorage.setItem("coach_effort", effortSel.value);
 thinkBox.onchange = () => localStorage.setItem("coach_think", thinkBox.checked ? "1" : "0");
+rateSel.onchange = () => localStorage.setItem("coach_rate", rateSel.value);
 $("saveKey").onclick = () => { localStorage.setItem("anthropic_key", keyInput.value.trim()); flash("Key saved."); };
 function flash(m){ statusEl.textContent=m; setTimeout(()=>{ if(statusEl.textContent===m) statusEl.textContent=""; },1800); }
+
+// ── Voices ──
+let voices = [];
+function loadVoices(){
+  if(!window.speechSynthesis) return;
+  voices = speechSynthesis.getVoices();
+  if(!voices.length) return;
+  const saved = localStorage.getItem("coach_voice");
+  voiceSel.innerHTML = "";
+  voices.forEach(v => {
+    const o = document.createElement("option");
+    o.value = v.voiceURI; o.textContent = v.name + " (" + v.lang + ")";
+    voiceSel.appendChild(o);
+  });
+  if(saved && voices.some(v => v.voiceURI === saved)) voiceSel.value = saved;
+  else {
+    const pref = voices.find(v => /en[-_]GB/i.test(v.lang)) || voices.find(v => /^en/i.test(v.lang));
+    if(pref) voiceSel.value = pref.voiceURI;
+  }
+}
+if(window.speechSynthesis){
+  loadVoices();
+  speechSynthesis.onvoiceschanged = loadVoices;
+}
+voiceSel.onchange = () => localStorage.setItem("coach_voice", voiceSel.value);
+testBtn.onclick = () => speak("Sensor Coach ready. SGP41, channel 1, no solder.");
+
+function speak(text){
+  if(!text || !window.speechSynthesis) return;
+  speechSynthesis.cancel();
+  const u = new SpeechSynthesisUtterance(text);
+  const v = voices.find(v => v.voiceURI === voiceSel.value);
+  if(v){ u.voice = v; u.lang = v.lang; } else { u.lang = "en-GB"; }
+  u.rate = parseFloat(rateSel.value) || 1.0;
+  speechSynthesis.speak(u);
+}
 
 // Load the map: prefer a fresh fetch of hil_map.json; fall back to the injected copy.
 async function loadMap(){
@@ -256,12 +306,6 @@ function render(out){
   }
 }
 function esc(s){ return String(s==null?"":s).replace(/[&<>]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;"}[c])); }
-
-function speak(text){
-  if(!text || !window.speechSynthesis) return;
-  speechSynthesis.cancel();
-  const u=new SpeechSynthesisUtterance(text); u.lang="en-GB"; u.rate=1.04; speechSynthesis.speak(u);
-}
 
 const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
 let rec=null, listening=false, finalText="";
