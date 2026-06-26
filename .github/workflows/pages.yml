@@ -1,0 +1,58 @@
+name: Deploy Sensor Coach to Pages
+
+# Publishes sensor-coach.html (as the site root) to GitHub Pages so the voice
+# app is usable over HTTPS (mic / SpeechRecognition needs a secure context).
+# Rebuilds the map from source each run: the public Wippersnapper_Components
+# submodule generator + overlay.json, with attached devices pinned from the
+# committed hil_map.json. No secrets are baked in — the Anthropic API key is
+# entered by the visitor at runtime and stored only in their browser.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+      - run: pip install openpyxl fpdf2
+      - name: Rebuild map + inject app (pins preserved from committed hil_map.json)
+        run: |
+          python build_map.py
+          python make_hil_pdf.py
+      - name: Assemble site
+        run: |
+          mkdir -p _site
+          cp sensor-coach.html _site/index.html
+          cp hil_map.json _site/
+          cp hil_sensor_attachment_guide.pdf _site/ 2>/dev/null || true
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
