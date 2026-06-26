@@ -8,6 +8,10 @@ Everything keys off one **canonical placement map**, `hil_map.json`, generated f
 `Wippersnapper_Components` sensor generator (a git submodule) plus a small firmware-side
 `overlay.json`. No hand-maintained sensor tables.
 
+> 🎙️ **Live Sensor Coach app:** <https://gundry-consultancy.github.io/hil-bench-tools/>
+> Open it on your phone at the bench, paste an Anthropic API key (stored only in your browser),
+> and say a sensor. Auto-deployed from `main` by `.github/workflows/pages.yml`.
+
 ## Contents
 
 | File | What |
